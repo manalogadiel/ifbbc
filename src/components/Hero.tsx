@@ -4,8 +4,8 @@ import { Users, Calendar, Volume2 } from 'lucide-react';
 import { MagneticButton } from './ui/MagneticButton';
 import { LineMaskReveal } from './ui/LineMaskReveal';
 
-// High-density frame buffer: 90 discrete frames ensures silky 60FPS scrubbing with fast texture extraction
-const TOTAL_FRAMES = 90;
+// High-performance WebP frame buffer: 45 discrete frames ensures silky 60FPS scrubbing with fast texture extraction
+const TOTAL_FRAMES = 45;
 const lerp = (start: number, end: number, factor: number) => start + (end - start) * factor;
 
 export interface GatheringScheduleItem {
@@ -461,7 +461,7 @@ export const Hero: React.FC<HeroProps> = ({ onOpenPrayer, onScrollToSermons }) =
     };
   }, []);
 
-  // ── 3. High-Performance Canvas Frame-Sequence Pipeline ──────────────────────
+  // ── 3. High-Performance WebP Frame-Sequence Scrubbing Engine ────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     const hero = heroRef.current;
@@ -470,58 +470,21 @@ export const Hero: React.FC<HeroProps> = ({ onOpenPrayer, onScrollToSermons }) =
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
 
-    // In-memory GPU-backed texture cache
-    const frameBitmaps: (ImageBitmap | null)[] = new Array(TOTAL_FRAMES).fill(null);
+    // Cache of pre-decoded WebP frame images (45 frames, ~1.2 MB total payload)
+    const frameImages: (HTMLImageElement | null)[] = new Array(TOTAL_FRAMES).fill(null);
+    const loadedFlags: boolean[] = new Array(TOTAL_FRAMES).fill(false);
+
     let targetFrame = 0;
     let currentFrame = 0;
-    let isExtracting = true;
     let rafId: number;
 
-    // 0ms Instant Poster Rendering: Draw high-res poster immediately so the canvas is never blank
-    let posterImg: HTMLImageElement | null = new Image();
-    let isPosterReady = false;
-
-    const onPosterReady = () => {
-      isPosterReady = true;
-      setIsEngineReady(true);
-      if (canvas && ctx && extractIdx === 0 && !frameBitmaps[0] && posterImg) {
-        drawFrameCover(posterImg);
-      }
-    };
-
-    posterImg.onload = onPosterReady;
-    posterImg.onerror = () => {
-      if (posterImg && posterImg.src.includes('.webp')) {
-        posterImg.src = '/hero-poster.jpg';
-      }
-    };
-    posterImg.src = '/hero-poster.webp';
-
-    // In case image was already cached by browser
-    if (posterImg.complete && posterImg.naturalWidth > 0) {
-      onPosterReady();
-    }
-
-    // Offscreen hardware decoder instance (uses the 5.2MB faststart-enabled H.264 stream)
-    const offscreenVideo = document.createElement('video');
-    offscreenVideo.src = '/Background Church.mp4';
-    offscreenVideo.muted = true;
-    offscreenVideo.playsInline = true;
-    offscreenVideo.preload = 'auto';
-
     // Cover Aspect-Ratio Helper (mimics object-fit: cover with zero distortion)
-    const drawFrameCover = (drawable: ImageBitmap | HTMLVideoElement | HTMLImageElement) => {
+    const drawFrameCover = (drawable: HTMLImageElement) => {
       if (!canvas || !ctx) return;
       const cWidth = canvas.width;
       const cHeight = canvas.height;
-      const sWidth =
-        (drawable as HTMLVideoElement).videoWidth ||
-        (drawable as HTMLImageElement).naturalWidth ||
-        (drawable as ImageBitmap).width;
-      const sHeight =
-        (drawable as HTMLVideoElement).videoHeight ||
-        (drawable as HTMLImageElement).naturalHeight ||
-        (drawable as ImageBitmap).height;
+      const sWidth = drawable.naturalWidth || drawable.width;
+      const sHeight = drawable.naturalHeight || drawable.height;
 
       if (!sWidth || !sHeight || cWidth === 0 || cHeight === 0) return;
 
@@ -559,56 +522,41 @@ export const Hero: React.FC<HeroProps> = ({ onOpenPrayer, onScrollToSermons }) =
       handleScroll();
     };
 
-    // Frame Extraction Loop: Pre-captures high-res GPU bitmaps sequentially
-    let extractIdx = 0;
-    const extractNextFrame = () => {
-      if (!isExtracting || extractIdx >= TOTAL_FRAMES || !offscreenVideo.duration) return;
-      // Extract up to the last valid frame (duration - 0.04s) to avoid black frames or decoder EOF
-      const time = (extractIdx / (TOTAL_FRAMES - 1)) * Math.max(0, offscreenVideo.duration - 0.04);
-      offscreenVideo.currentTime = time;
-    };
-
-    offscreenVideo.addEventListener('seeked', async () => {
-      if (!isExtracting || extractIdx >= TOTAL_FRAMES) return;
-      try {
-        const bitmap = await createImageBitmap(offscreenVideo);
-        frameBitmaps[extractIdx] = bitmap;
-
-        // Render first frame immediately so canvas isn't blank
-        if (extractIdx === 0) {
-          setIsEngineReady(true);
-          drawFrameCover(bitmap);
-        }
-
-        extractIdx++;
-        if (extractIdx < TOTAL_FRAMES) {
-          extractNextFrame();
-        } else {
-          isExtracting = false;
-        }
-      } catch {
-        extractIdx++;
-        if (extractIdx < TOTAL_FRAMES) extractNextFrame();
+    // 0ms Instant Frame 0 Rendering: Load frame_00.webp (with hero-poster.webp fallback) immediately
+    let initialPoster: HTMLImageElement | null = new Image();
+    initialPoster.onload = () => {
+      if (initialPoster) {
+        frameImages[0] = initialPoster;
+        loadedFlags[0] = true;
+        setIsEngineReady(true);
+        drawFrameCover(initialPoster);
       }
-    });
-
-    // ── Safeguard 1: Metadata & CanPlayThrough Loading Guard ──
-    const initEngine = () => {
-      if (!offscreenVideo.duration) return;
-      offscreenVideo.pause();
-      extractNextFrame();
-      handleResize();
     };
-
-    offscreenVideo.addEventListener('loadedmetadata', initEngine);
-    offscreenVideo.addEventListener('canplaythrough', initEngine);
-
-    // Fallback if readyState >= 1 (e.g. cached video)
-    if (offscreenVideo.readyState >= 1) {
-      initEngine();
+    initialPoster.onerror = () => {
+      if (initialPoster && initialPoster.src.includes('frame_00')) {
+        initialPoster.src = '/hero-poster.webp';
+      }
+    };
+    initialPoster.src = '/hero-frames/frame_00.webp';
+    if (initialPoster.complete && initialPoster.naturalWidth > 0) {
+      frameImages[0] = initialPoster;
+      loadedFlags[0] = true;
+      setIsEngineReady(true);
+      drawFrameCover(initialPoster);
     }
 
-    // ── Safeguard 2 & 3: Precision Keyframe Mapping Confined Strictly to Section 1 ──
+    // Asynchronously preload all remaining WebP frames in the background
+    for (let i = 1; i < TOTAL_FRAMES; i++) {
+      const img = new Image();
+      const frameNum = String(i).padStart(2, '0');
+      img.src = `/hero-frames/frame_${frameNum}.webp`;
+      img.onload = () => {
+        frameImages[i] = img;
+        loadedFlags[i] = true;
+      };
+    }
+
+    // Precision Keyframe Mapping Confined Strictly to Section 1
     const handleScroll = () => {
       const scrollY = window.scrollY;
       const heroEl = heroRef.current;
@@ -620,7 +568,7 @@ export const Hero: React.FC<HeroProps> = ({ onOpenPrayer, onScrollToSermons }) =
       // Progress scales smoothly from 0.0 at top of Section 1 to 1.0 at bottom of Section 1
       const normalizedProgress = Math.min(Math.max(scrollY / scrollRange, 0), 1.0);
 
-      // Explicit End-State Clamping: Reaches final keyframe at the end of Section 1
+      // Moving forward on scroll down, backward on scroll up
       if (normalizedProgress >= 0.995) {
         targetFrame = TOTAL_FRAMES - 1;
       } else {
@@ -633,34 +581,32 @@ export const Hero: React.FC<HeroProps> = ({ onOpenPrayer, onScrollToSermons }) =
       // Smooth floating-point spring interpolation prevents jumping over chunks of frames
       currentFrame = lerp(currentFrame, targetFrame, 0.20);
 
-      // If close to the final frame or target is at maximum, snap precisely to the final keyframe
+      // Snap tightly when near the extremes
       if (targetFrame === TOTAL_FRAMES - 1 && currentFrame >= TOTAL_FRAMES - 1.2) {
         currentFrame = TOTAL_FRAMES - 1;
+      } else if (targetFrame === 0 && currentFrame <= 0.2) {
+        currentFrame = 0;
       }
 
       const frameIndex = Math.min(Math.max(Math.round(currentFrame), 0), TOTAL_FRAMES - 1);
 
-      // Find exact or closest available frame bitmap
-      let bitmap = frameBitmaps[frameIndex];
-      if (!bitmap) {
+      // Find exact or closest available frame image
+      let imgToDraw = loadedFlags[frameIndex] ? frameImages[frameIndex] : null;
+      if (!imgToDraw) {
         for (let offset = 1; offset < TOTAL_FRAMES; offset++) {
-          if (frameIndex - offset >= 0 && frameBitmaps[frameIndex - offset]) {
-            bitmap = frameBitmaps[frameIndex - offset];
+          if (frameIndex - offset >= 0 && loadedFlags[frameIndex - offset] && frameImages[frameIndex - offset]) {
+            imgToDraw = frameImages[frameIndex - offset];
             break;
           }
-          if (frameIndex + offset < TOTAL_FRAMES && frameBitmaps[frameIndex + offset]) {
-            bitmap = frameBitmaps[frameIndex + offset];
+          if (frameIndex + offset < TOTAL_FRAMES && loadedFlags[frameIndex + offset] && frameImages[frameIndex + offset]) {
+            imgToDraw = frameImages[frameIndex + offset];
             break;
           }
         }
       }
 
-      if (bitmap) {
-        drawFrameCover(bitmap);
-      } else if (offscreenVideo.readyState >= 2) {
-        drawFrameCover(offscreenVideo);
-      } else if (isPosterReady && posterImg) {
-        drawFrameCover(posterImg);
+      if (imgToDraw) {
+        drawFrameCover(imgToDraw);
       }
 
       rafId = requestAnimationFrame(renderLoop);
@@ -672,23 +618,18 @@ export const Hero: React.FC<HeroProps> = ({ onOpenPrayer, onScrollToSermons }) =
 
     // Re-run layout calculations after web fonts load to prevent layout shift shortening
     if (document.fonts?.ready) {
-      document.fonts.ready.then(handleResize).catch(() => { });
+      document.fonts.ready.then(handleResize).catch(() => {});
     }
 
     handleResize();
     rafId = requestAnimationFrame(renderLoop);
 
     return () => {
-      isExtracting = false;
-      posterImg = null;
       window.removeEventListener('scroll', handleScroll);
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('load', handleResize);
       cancelAnimationFrame(rafId);
-      offscreenVideo.removeAttribute('src');
-      offscreenVideo.load();
-      // Free bitmap GPU textures on unmount
-      frameBitmaps.forEach((bmp) => bmp?.close());
+      initialPoster = null;
     };
   }, []);
 

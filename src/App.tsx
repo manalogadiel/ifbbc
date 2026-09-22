@@ -46,7 +46,7 @@ export const AppContent: React.FC = () => {
           onOpenPrayer={() => setPrayerModalOpen(true)}
         />
 
-        {/* Section 1: Hero with Background Church Video */}
+        {/* Section 1: Hero with Optimized WebP Scroll Background */}
         <Hero
           onOpenPrayer={() => setPrayerModalOpen(true)}
           onScrollToSermons={handleScrollToSermons}
