@@ -5,6 +5,8 @@ export interface StreamInfo {
   subtitle?: string;
   thumbnailUrl: string;
   videoUrl: string;
+  embedUrl: string;
+  videoId?: string;
   channelName: string;
   channelUrl: string;
   publishedAt?: string;
@@ -17,32 +19,38 @@ export interface LivestreamsData {
   lastUpdated: number;
 }
 
+const YOUTUBE_CHANNEL_ID = 'UC9l4j8_z3QtkxoIwZvpUXKw';
+const YOUTUBE_HANDLE = '@ifbbc';
+const FB_PAGE_HANDLE = 'inicbulanfundamental.baptistbiblechurch';
+
 // In-memory cache
 let cachedData: LivestreamsData | null = null;
 let lastFetchTime = 0;
-const CACHE_TTL_MS = 60 * 1000; // 60 seconds
+const CACHE_TTL_MS = 30 * 1000; // 30 seconds for quick live detection
 
-// Default fallback data for resilience
+// Default fallback data for initial paint
 const defaultData: LivestreamsData = {
   youtube: {
     platform: 'youtube',
     status: 'completed',
-    title: 'PRAYER MEETING & MIDWEEK SERVICE',
-    subtitle: 'Inicbulan Fundamental Baptist Bible Church',
+    title: 'Sunday Worship Service',
+    subtitle: 'IFBBC Pulpit',
     thumbnailUrl: 'https://images.unsplash.com/photo-1519791883288-dc8bd696e667?q=80&w=1200&auto=format&fit=crop',
-    videoUrl: 'https://www.youtube.com/@ifbbc/streams',
+    videoUrl: `https://www.youtube.com/${YOUTUBE_HANDLE}/streams`,
+    embedUrl: `https://www.youtube-nocookie.com/embed/live_stream?channel=${YOUTUBE_CHANNEL_ID}`,
     channelName: 'IFBBC Official',
-    channelUrl: 'https://www.youtube.com/@ifbbc',
+    channelUrl: `https://www.youtube.com/${YOUTUBE_HANDLE}`,
   },
   facebook: {
     platform: 'facebook',
     status: 'completed',
-    title: 'WORSHIP LIVESTREAM',
-    subtitle: 'Live from IFBBC',
+    title: 'Sunday Divine Worship',
+    subtitle: 'IFBBC Worship Service',
     thumbnailUrl: 'https://images.unsplash.com/photo-1510590337019-5ef8d3d32116?q=80&w=1200&auto=format&fit=crop',
-    videoUrl: 'https://www.facebook.com/inicbulanfundamental.baptistbiblechurch',
+    videoUrl: `https://www.facebook.com/${FB_PAGE_HANDLE}/live_videos`,
+    embedUrl: `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(`https://www.facebook.com/${FB_PAGE_HANDLE}/live_videos`)}&show_text=false&allowfullscreen=true`,
     channelName: 'Inicbulan Fundamental Baptist Bible Church',
-    channelUrl: 'https://www.facebook.com/inicbulanfundamental.baptistbiblechurch',
+    channelUrl: `https://www.facebook.com/${FB_PAGE_HANDLE}`,
   },
   activeStream: null,
   lastUpdated: Date.now(),
@@ -56,126 +64,111 @@ async function fetchYouTubeLivestream(): Promise<StreamInfo> {
     if (apiKey) {
       try {
         const searchRes = await fetch(
-          `https://www.googleapis.com/youtube/v3/search?part=snippet&eventType=live&type=video&q=ifbbc&key=${apiKey}`
+          `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${YOUTUBE_CHANNEL_ID}&eventType=live&type=video&key=${apiKey}`
         );
         if (searchRes.ok) {
           const searchData = await searchRes.json();
           if (searchData.items && searchData.items.length > 0) {
             const item = searchData.items[0];
+            const videoId = item.id.videoId;
             return {
               platform: 'youtube',
               status: 'live',
               title: item.snippet.title,
-              subtitle: 'Broadcasting live on YouTube',
-              thumbnailUrl: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.default?.url,
-              videoUrl: `https://www.youtube.com/watch?v=${item.id.videoId}`,
+              subtitle: 'Live on YouTube',
+              thumbnailUrl: item.snippet.thumbnails?.high?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+              videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
+              embedUrl: `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0`,
+              videoId,
               channelName: 'IFBBC Official',
-              channelUrl: 'https://www.youtube.com/@ifbbc',
+              channelUrl: `https://www.youtube.com/${YOUTUBE_HANDLE}`,
+              publishedAt: item.snippet.publishedAt,
             };
           }
         }
       } catch (err) {
-        console.warn('[livestreamService] YouTube API search error, falling back:', err);
+        console.warn('[livestreamService] YouTube API error, falling back:', err);
       }
     }
 
     // 2. Check /live directly to see if currently streaming
     try {
-      const liveRes = await fetch('https://www.youtube.com/@ifbbc/live', {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
+      const liveRes = await fetch(`https://www.youtube.com/${YOUTUBE_HANDLE}/live`, {
         redirect: 'follow',
       });
 
-      const liveHtml = await liveRes.text();
-      const isLiveNow =
-        liveHtml.includes('"isLive":true') ||
-        liveHtml.includes('"isLiveBroadcast":true') ||
-        liveHtml.includes('BADGE_STYLE_TYPE_LIVE_NOW');
-      const isScheduled = liveHtml.includes('"upcomingEventData"');
+      if (liveRes.ok) {
+        const liveHtml = await liveRes.text();
+        const isLiveNow =
+          liveHtml.includes('"isLive":true') ||
+          liveHtml.includes('"isLiveBroadcast":true') ||
+          liveHtml.includes('BADGE_STYLE_TYPE_LIVE_NOW');
+        const isScheduled = liveHtml.includes('"upcomingEventData"');
 
-      // Check if URL redirected to a specific video
-      const liveVideoMatch = liveRes.url.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
-      const videoId = liveVideoMatch
-        ? liveVideoMatch[1]
-        : (liveHtml.match(/"videoId":"([a-zA-Z0-9_-]{11})"/)?.[1] ?? null);
+        const liveVideoMatch = liveRes.url.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+        const liveVideoId = liveVideoMatch
+          ? liveVideoMatch[1]
+          : (liveHtml.match(/"videoId":"([a-zA-Z0-9_-]{11})"/)?.[1] ?? null);
 
-      if ((isLiveNow || isScheduled) && videoId) {
-        // Fetch metadata via oEmbed
-        let title = 'IFBBC LIVE WORSHIP SERVICE';
-        try {
-          const oembed = await fetch(
-            `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`
-          );
-          if (oembed.ok) {
-            const data = await oembed.json();
-            if (data.title) title = data.title;
+        if ((isLiveNow || isScheduled) && liveVideoId) {
+          let title = 'IFBBC Live Worship Service';
+          const titleMatch = liveHtml.match(/<meta name="title" content="([^"]+)">/) || liveHtml.match(/<title>([^<]+)<\/title>/);
+          if (titleMatch?.[1]) {
+            title = titleMatch[1].replace(' - YouTube', '').trim();
           }
-        } catch {
-          // ignore
-        }
 
-        return {
-          platform: 'youtube',
-          status: isLiveNow ? 'live' : 'scheduled',
-          title,
-          subtitle: isLiveNow
-            ? "Broadcasting live from IFBBC Sanctuary"
-            : 'Scheduled Upcoming Livestream',
-          thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-          videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
-          channelName: 'IFBBC Official',
-          channelUrl: 'https://www.youtube.com/@ifbbc',
-        };
+          return {
+            platform: 'youtube',
+            status: isLiveNow ? 'live' : 'scheduled',
+            title,
+            subtitle: isLiveNow ? 'Live on YouTube' : 'Scheduled Stream',
+            thumbnailUrl: `https://i.ytimg.com/vi/${liveVideoId}/hqdefault.jpg`,
+            videoUrl: `https://www.youtube.com/watch?v=${liveVideoId}`,
+            embedUrl: `https://www.youtube-nocookie.com/embed/${liveVideoId}?autoplay=1&rel=0`,
+            videoId: liveVideoId,
+            channelName: 'IFBBC Official',
+            channelUrl: `https://www.youtube.com/${YOUTUBE_HANDLE}`,
+          };
+        }
       }
     } catch (e) {
-      console.warn('[livestreamService] /live check failed, falling back to /streams:', e);
+      console.warn('[livestreamService] /live check failed:', e);
     }
 
-    // 3. If not live, fetch the latest completed livestream from /streams
-    const streamsRes = await fetch('https://www.youtube.com/@ifbbc/streams', {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      },
-    });
+    // 3. Fallback to official YouTube XML RSS feed for the latest broadcast / sermon
+    try {
+      const rssRes = await fetch(
+        `https://www.youtube.com/feeds/videos.xml?channel_id=${YOUTUBE_CHANNEL_ID}`
+      );
+      if (rssRes.ok) {
+        const xml = await rssRes.text();
+        const entryMatch = xml.match(/<entry>(.*?)<\/entry>/s);
+        if (entryMatch) {
+          const entry = entryMatch[1];
+          const videoId = entry.match(/<yt:videoId>([^<]+)<\/yt:videoId>/)?.[1];
+          let title = entry.match(/<title>([^<]+)<\/title>/)?.[1] || 'Latest IFBBC Stream';
+          title = title.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+          const published = entry.match(/<published>([^<]+)<\/published>/)?.[1];
 
-    if (streamsRes.ok) {
-      const html = await streamsRes.text();
-      const videoIds = [
-        ...html.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g),
-      ].map((m) => m[1]);
-      const uniqueIds = [...new Set(videoIds)];
-
-      if (uniqueIds.length > 0) {
-        const latestId = uniqueIds[0];
-        let title = 'LATEST IFBBC LIVESTREAM';
-        try {
-          const oembed = await fetch(
-            `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${latestId}&format=json`
-          );
-          if (oembed.ok) {
-            const data = await oembed.json();
-            if (data.title) title = data.title;
+          if (videoId) {
+            return {
+              platform: 'youtube',
+              status: 'completed',
+              title,
+              subtitle: 'Latest Service & Message',
+              thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+              videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
+              embedUrl: `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0`,
+              videoId,
+              channelName: 'IFBBC Official',
+              channelUrl: `https://www.youtube.com/${YOUTUBE_HANDLE}`,
+              publishedAt: published,
+            };
           }
-        } catch {
-          // ignore
         }
-
-        return {
-          platform: 'youtube',
-          status: 'completed',
-          title,
-          subtitle: 'Latest Streamed Gathering & Message',
-          thumbnailUrl: `https://i.ytimg.com/vi/${latestId}/hqdefault.jpg`,
-          videoUrl: `https://www.youtube.com/watch?v=${latestId}`,
-          channelName: 'IFBBC Official',
-          channelUrl: 'https://www.youtube.com/@ifbbc',
-        };
       }
+    } catch (e) {
+      console.warn('[livestreamService] YouTube RSS feed failed:', e);
     }
 
     return fallback;
@@ -188,9 +181,25 @@ async function fetchYouTubeLivestream(): Promise<StreamInfo> {
 async function fetchFacebookLivestream(): Promise<StreamInfo> {
   const fallback = defaultData.facebook;
   try {
+    // 0. Check for manual override in environment
+    const overrideUrl = process.env.FACEBOOK_LIVE_OVERRIDE_URL || process.env.VITE_FB_LIVE_OVERRIDE_URL;
+    if (overrideUrl) {
+      return {
+        platform: 'facebook',
+        status: 'live',
+        title: 'IFBBC Live Service',
+        subtitle: 'Live on Facebook',
+        thumbnailUrl: fallback.thumbnailUrl,
+        videoUrl: overrideUrl,
+        embedUrl: `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(overrideUrl)}&show_text=false&allowfullscreen=true`,
+        channelName: 'Inicbulan Fundamental Baptist Bible Church',
+        channelUrl: `https://www.facebook.com/${FB_PAGE_HANDLE}`,
+      };
+    }
+
     // 1. Check if Facebook Graph API Token is configured
     const fbToken = process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
-    const pageId = process.env.FACEBOOK_PAGE_ID || 'inicbulanfundamental.baptistbiblechurch';
+    const pageId = process.env.FACEBOOK_PAGE_ID || FB_PAGE_HANDLE;
 
     if (fbToken) {
       try {
@@ -202,15 +211,17 @@ async function fetchFacebookLivestream(): Promise<StreamInfo> {
           if (data.data && data.data.length > 0) {
             const latest = data.data[0];
             const isLive = latest.status === 'LIVE';
+            const permalink = latest.video?.permalink_url || `https://www.facebook.com/${FB_PAGE_HANDLE}/live_videos`;
             return {
               platform: 'facebook',
               status: isLive ? 'live' : 'completed',
-              title: latest.title || latest.description || 'IFBBC Sunday Divine Worship',
-              subtitle: isLive ? "Streaming live on Facebook" : 'Latest Facebook Service Broadcast',
+              title: latest.title || latest.description || 'IFBBC Sunday Service',
+              subtitle: isLive ? 'Live on Facebook' : 'Latest Facebook Broadcast',
               thumbnailUrl: fallback.thumbnailUrl,
-              videoUrl: latest.video?.permalink_url || `https://www.facebook.com/${pageId}/live_videos`,
+              videoUrl: permalink,
+              embedUrl: `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(permalink)}&show_text=false&allowfullscreen=true`,
               channelName: 'Inicbulan Fundamental Baptist Bible Church',
-              channelUrl: 'https://www.facebook.com/inicbulanfundamental.baptistbiblechurch',
+              channelUrl: `https://www.facebook.com/${FB_PAGE_HANDLE}`,
               publishedAt: latest.creation_time,
             };
           }
@@ -220,47 +231,52 @@ async function fetchFacebookLivestream(): Promise<StreamInfo> {
       }
     }
 
-    // 2. Smart public page detection
-    try {
-      const pageRes = await fetch(
-        'https://www.facebook.com/inicbulanfundamental.baptistbiblechurch',
-        {
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-          },
-        }
-      );
+    // 2. Fetch page and live_videos metadata directly
+    let title = 'Inicbulan Fundamental Baptist Church';
+    let thumbnailUrl = fallback.thumbnailUrl;
+    let videoUrl = `https://www.facebook.com/${FB_PAGE_HANDLE}/live_videos`;
+    let isLive = false;
 
+    try {
+      const pageRes = await fetch(`https://www.facebook.com/${FB_PAGE_HANDLE}`);
       if (pageRes.ok) {
         const html = await pageRes.text();
-        const isLiveNow =
-          html.includes('live_video') &&
-          (html.includes('"is_live":true') || html.includes('LIVE NOW') || html.includes('was live'));
-
-        return {
-          platform: 'facebook',
-          status: isLiveNow ? 'live' : 'completed',
-          title: isLiveNow
-            ? 'IFBBC SUNDAY CELEBRATION (LIVE)'
-            : 'SUNDAY DIVINE WORSHIP CELEBRATION',
-          subtitle: isLiveNow
-            ? "Broadcasting live on Facebook Watch"
-            : 'Latest Facebook Video Broadcast',
-          thumbnailUrl: fallback.thumbnailUrl,
-          videoUrl: isLiveNow
-            ? 'https://www.facebook.com/inicbulanfundamental.baptistbiblechurch/live_videos'
-            : 'https://www.facebook.com/inicbulanfundamental.baptistbiblechurch',
-          channelName: 'Inicbulan Fundamental Baptist Bible Church',
-          channelUrl: 'https://www.facebook.com/inicbulanfundamental.baptistbiblechurch',
-        };
+        const ogTitle = html.match(/<meta property="og:title" content="([^"]+)"/)?.[1];
+        const ogImage = html.match(/<meta property="og:image" content="([^"]+)"/)?.[1];
+        if (ogTitle) title = ogTitle.replace(/&amp;/g, '&');
+        if (ogImage) thumbnailUrl = ogImage.replace(/&amp;/g, '&');
       }
     } catch {
       // ignore
     }
 
-    return fallback;
+    try {
+      const liveRes = await fetch(`https://www.facebook.com/${FB_PAGE_HANDLE}/live_videos`);
+      if (liveRes.ok) {
+        const liveHtml = await liveRes.text();
+        isLive = liveHtml.includes('"is_live":true') || liveHtml.includes('"broadcast_status":"LIVE"');
+        const videoIdMatch = liveHtml.match(/\/videos\/(\d+)/);
+        if (videoIdMatch) {
+          videoUrl = `https://www.facebook.com/${FB_PAGE_HANDLE}/videos/${videoIdMatch[1]}`;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    const embedUrl = `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(videoUrl)}&show_text=false&allowfullscreen=true`;
+
+    return {
+      platform: 'facebook',
+      status: isLive ? 'live' : 'completed',
+      title: isLive ? 'IFBBC Live Celebration' : title,
+      subtitle: isLive ? 'Live on Facebook' : 'Latest Facebook Video',
+      thumbnailUrl,
+      videoUrl,
+      embedUrl,
+      channelName: 'Inicbulan Fundamental Baptist Bible Church',
+      channelUrl: `https://www.facebook.com/${FB_PAGE_HANDLE}`,
+    };
   } catch (error) {
     console.error('[livestreamService] Error fetching Facebook:', error);
     return fallback;

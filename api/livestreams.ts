@@ -18,7 +18,7 @@ export default async function handler(req: any, res: any) {
 
     const data = await getLivestreamsData();
     res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=120');
+    res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
     res.status(200).json(data);
   } catch (error) {
     console.error('API /api/livestreams error:', error);
